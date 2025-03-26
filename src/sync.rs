@@ -58,21 +58,21 @@ impl<'buf> RestartableFBA<'buf> {
         Some(AllocatedRef { reference: s, counter: Arc::clone(&self.counter) })
     }
 
-    pub fn create<'alloc: 'buf, T>(&'alloc self, value: T) -> Option<AllocatedRef<'buf, T>> {
+    pub fn create<'alloc: 'buf, T>(&'alloc self, value: T) -> Result<AllocatedRef<'buf, T>, T> {
         let r = self.alloc.lock().unwrap().create(value)?;
 
         self.counter.fetch_add(1, Ordering::Relaxed);
 
-        Some(AllocatedRef { reference: r, counter: Arc::clone(&self.counter) })
+        Ok(AllocatedRef { reference: r, counter: Arc::clone(&self.counter) })
     }
 
     pub fn restart(&self) {
-        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "Allocator can be restared only when there is no refernce to it's buffer");
+        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "Allocator can be restared only when there is no references to it's buffer");
         self.alloc.lock().unwrap().offset = 0;
     }
 
     pub fn new_buffer(&self, buf: &'buf mut [u8]) {
-        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "New buffer of allocator can be setted only when there is no refernce to it's old buffer");
+        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "New buffer of allocator can be setted only when there is no references to it's old buffer");
         self.alloc.lock().unwrap().buf = buf;
         self.alloc.lock().unwrap().offset = 0;
     }
@@ -104,17 +104,17 @@ mod tests {
 
         thread::scope(|scope| {
             scope.spawn(|| {
-                a.create(0x0201u16);
+                a.create(0x0201u16).unwrap();
                 dbg!(&a);
             });
 
             scope.spawn(|| {
-                a.create(0x0403u16);
+                a.create(0x0403u16).unwrap();
                 dbg!(&a);
             });
         });
 
-        a.create(5u8);
+        a.create(5u8).unwrap();
         dbg!(&a);
 
         let mut buf2 = [0u8; 1];
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Allocator can be restared only when there is no refernce to it's buffer")]
+    #[should_panic(expected = "Allocator can be restared only when there is no references to it's buffer")]
     fn it_works2() {
         let mut buf = vec![0u8; 5];
         let a = RestartableFBA::new(&mut buf);

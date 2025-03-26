@@ -60,12 +60,15 @@ impl<'buf> FixBufferedAllocator<'buf> {
         }
     }
 
-    pub fn create<T>(&mut self, value: T) -> Option<&'buf mut T> {
-        let res: &mut T = unsafe {
-            std::mem::transmute(self.alloc(Layout::new::<T>())?)
+    pub fn create<T>(&mut self, value: T) -> Result<&'buf mut T, T> {
+        let Some(res) = self.alloc(Layout::new::<T>()) else {
+            return Err(value);
         };
+
+        let res: &mut T = unsafe { std::mem::transmute(res) };
+
         *res = value;
-        Some(res)
+        Ok(res)
     }
 }
 
@@ -129,22 +132,22 @@ impl<'buf> RestartableFBA<'buf> {
         Some(AllocatedRef { reference: s, allocator: self })
     }
 
-    pub fn create<'alloc: 'buf, T>(&'alloc self, value: T) -> Option<AllocatedRef<'buf, T>> {
+    pub fn create<'alloc: 'buf, T>(&'alloc self, value: T) -> Result<AllocatedRef<'buf, T>, T> {
         let r = self.alloc.borrow_mut().create(value)?;
 
         let counter = self.counter.get();
         self.counter.set(counter + 1);
 
-        Some(AllocatedRef { reference: r, allocator: self })
+        Ok(AllocatedRef { reference: r, allocator: self })
     }
 
     pub fn restart(&self) {
-        assert_eq!(self.counter.get(), 0, "Allocator can be restared only when there is no refernce to it's buffer");
+        assert_eq!(self.counter.get(), 0, "Allocator can be restared only when there is no references to it's buffer");
         self.alloc.borrow_mut().offset = 0;
     }
 
     pub fn new_buffer(&self, buf: &'buf mut [u8]) {
-        assert_eq!(self.counter.get(), 0, "New buffer of allocator can be setted only when there is no refernce to it's old buffer");
+        assert_eq!(self.counter.get(), 0, "New buffer of allocator can be setted only when there is no references to it's old buffer");
         self.alloc.borrow_mut().buf = buf;
         self.alloc.borrow_mut().offset = 0;
     }
@@ -191,12 +194,12 @@ mod tests {
         let s: &[u16] = a.create([1, 2, 3, 4]).unwrap();
         let v1: &u8 = a.create(0xff).unwrap();
         let v2: &u16 = a.create(0xaaaa).unwrap();
-        let v3: Option<&mut &str> = a.create("none");
+        let v3 = a.create(0xffu8);
 
         assert_eq!(*v1, 0xff);
         assert_eq!(*v2, 0xaaaa);
-        assert_eq!(v3, None);
-        dbg!(&a, s, v1, v2, v3);
+        assert_eq!(v3, Err(0xffu8));
+        dbg!(&a, s, v1, v2, v3.unwrap_err());
     }
 
     #[test]
@@ -212,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Allocator can be restared only when there is no refernce to it's buffer")]
+    #[should_panic(expected = "Allocator can be restared only when there is no references to it's buffer")]
     fn restart_panics_with_active_references() {
         let mut b = [0u8; 2];
         let a = RestartableFBA::new(&mut b);
@@ -222,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "New buffer of allocator can be setted only when there is no refernce to it's old buffer")]
+    #[should_panic(expected = "New buffer of allocator can be setted only when there is no references to it's old buffer")]
     fn new_buffer_panics_with_active_references() {
         let mut b1 = [0u8; 2];
         let mut b2 = [0u8; 2];
