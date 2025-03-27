@@ -142,14 +142,31 @@ impl<'buf> RestartableFBA<'buf> {
     }
 
     pub fn restart(&self) {
-        assert_eq!(self.counter.get(), 0, "Allocator can be restared only when there is no references to it's buffer");
-        self.alloc.borrow_mut().offset = 0;
+        self.try_restard().expect("Allocator can be restared only when there is no references to it's buffer")
     }
 
     pub fn new_buffer(&self, buf: &'buf mut [u8]) {
-        assert_eq!(self.counter.get(), 0, "New buffer of allocator can be setted only when there is no references to it's old buffer");
-        self.alloc.borrow_mut().buf = buf;
-        self.alloc.borrow_mut().offset = 0;
+        self.try_new_buffer(buf).expect("New buffer of allocator can be setted only when there is no references to it's old buffer")
+    }
+
+    pub fn try_restard(&self) -> Option<()> {
+        if self.counter.get() != 0 {
+            None
+        } else {
+            self.alloc.borrow_mut().offset = 0;
+            Some(())
+        }
+    }
+
+    pub fn try_new_buffer(&self, buf: &'buf mut [u8]) -> Option<()> {
+        if self.counter.get() != 0 {
+            None
+        } else {
+            let mut alloc = self.alloc.borrow_mut();
+            alloc.buf = buf;
+            alloc.offset = 0;
+            Some(())
+        }
     }
 }
 

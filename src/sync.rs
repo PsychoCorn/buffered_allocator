@@ -30,6 +30,7 @@ impl<'a, T: ?Sized> DerefMut for AllocatedRef<'a, T> {
 
 impl<'a, T: ?Sized> Drop for AllocatedRef<'a, T> {
     fn drop(&mut self) {
+        assert!(self.counter.load(Ordering::Relaxed) >= 1);
         self.counter.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -67,14 +68,31 @@ impl<'buf> RestartableFBA<'buf> {
     }
 
     pub fn restart(&self) {
-        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "Allocator can be restared only when there is no references to it's buffer");
-        self.alloc.lock().unwrap().offset = 0;
+        self.try_restard().expect("Allocator can be restared only when there is no references to it's buffer")
     }
 
     pub fn new_buffer(&self, buf: &'buf mut [u8]) {
-        assert_eq!(self.counter.load(Ordering::Relaxed), 0, "New buffer of allocator can be setted only when there is no references to it's old buffer");
-        self.alloc.lock().unwrap().buf = buf;
-        self.alloc.lock().unwrap().offset = 0;
+        self.try_new_buffer(buf).expect("New buffer of allocator can be setted only when there is no references to it's old buffer")
+    }
+
+    pub fn try_restard(&self) -> Option<()> {
+        if self.counter.load(Ordering::Relaxed) != 0 {
+            None
+        } else {
+            self.alloc.lock().unwrap().offset = 0;
+            Some(())
+        }
+    }
+
+    pub fn try_new_buffer(&self, buf: &'buf mut [u8]) -> Option<()> {
+        if self.counter.load(Ordering::Relaxed) != 0 {
+            None
+        } else {
+            let mut alloc = self.alloc.lock().unwrap();
+            alloc.buf = buf;
+            alloc.offset = 0;
+            Some(())
+        }
     }
 }
 
@@ -87,10 +105,10 @@ mod tests {
     #[test]
     fn it_works() {
         let mut b = [0u8; 5];
-        let mut a = FixBufferedAllocator::new(&mut b);
+        let a = RestartableFBA::new(&mut b);
         dbg!(&a);
-        let v1: &mut i32 = a.create(0x04030201).unwrap();
-        let v2: &mut u8 = a.create(0xff).unwrap();
+        let v1 = a.create(0x04030201).unwrap();
+        let v2 = a.create(0xffu8).unwrap();
         
         assert_eq!(*v1, 0x04030201);
         assert_eq!(*v2, 0xff);
@@ -145,5 +163,37 @@ mod tests {
         dbg!(&a);
 
         a.restart();
+    }
+
+    #[test]
+    fn it_works3() {
+        let mut buf = [0u8; 16];
+        let a = RestartableFBA::new(&mut buf);
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut v = a.create(0u64).unwrap();
+                let mut result = 0u64;
+                for i in 0..1_000_000u64 {
+                    result = result.wrapping_add(i);
+                }
+                *v = result;
+                dbg!(&a);
+            });
+
+            scope.spawn(|| {
+                let mut v = a.create(0u64).unwrap();
+                let mut result = 0u64;
+                for i in 1_000_000u64..2_000_000u64 {
+                    result = result.wrapping_add(i);
+                }
+                *v = result;
+                dbg!(&a);
+            });
+        });
+        dbg!(&a);
+        while let None = a.try_restard() {}
+        
+        dbg!(&a);
     }
 }
