@@ -39,7 +39,7 @@ impl<'buf> RestartableFBA<'buf> {
     pub fn new(buf: &'buf mut [u8]) -> Self {
         Self {
             alloc: Mutex::new(FixBufferedAllocator::new(buf)),
-            counter: Arc::new(AtomicUsize::new(0))
+            counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -68,47 +68,52 @@ impl<'buf> RestartableFBA<'buf> {
     }
 
     pub fn restart(&self) {
-        self.try_restard().expect("Allocator can be restared only when there is no references to it's buffer")
+        self.try_restard().expect("Allocator can be restared only when there is no references to it's buffer and buffer is not borrowed")
     }
 
     pub fn new_buffer(&self, buf: &'buf mut [u8]) {
-        self.try_new_buffer(buf).expect("New buffer of allocator can be setted only when there is no references to it's old buffer")
+        self.try_new_buffer(buf).expect("New buffer of allocator can be setted only when there is no references to it's old buffer and buffer is not borrowed")
     }
 
     pub fn try_restard(&self) -> Option<()> {
+        // use lock in the beggining to prevent allocation while borrowing buffer
+        let mut alloc = self.alloc.lock().unwrap();
+
         if self.counter.load(Ordering::Relaxed) != 0 {
             None
         } else {
-            self.alloc.lock().unwrap().offset = 0;
+            alloc.offset = 0;
             Some(())
         }
     }
 
     pub fn try_new_buffer(&self, buf: &'buf mut [u8]) -> Option<()> {
+        // use lock in the beggining to prevent allocation while borrowing buffer
+        let mut alloc = self.alloc.lock().unwrap();
+
         if self.counter.load(Ordering::Relaxed) != 0 {
             None
         } else {
-            let mut alloc = self.alloc.lock().unwrap();
             alloc.buf = buf;
             alloc.offset = 0;
             Some(())
         }
     }
 
-    pub fn get_buf(&self) -> Option<&'buf mut [u8]> {
-        if self.counter.load(Ordering::SeqCst) != 0 {
+    pub fn get_buf<'alloc: 'buf>(&'alloc self) -> Option<AllocatedRef<'buf, [u8]>> {
+        // use lock in the beggining to prevent allocation while borrowing buffer
+        let mut alloc = self.alloc.lock().unwrap();
+
+        if self.counter.load(Ordering::Relaxed) != 0 {
             return None;
         }
 
-        let mut alloc = self.alloc.lock().unwrap();
+        let length = alloc.buf.len();
+        alloc.offset = 0;
 
-        unsafe {
-            let ptr = std::ptr::slice_from_raw_parts_mut(
-                alloc.buf.as_mut_ptr(), 
-                alloc.buf.len()
-            );
-            Some(&mut *ptr)
-        }
+        drop(alloc);
+
+        self.alloc_slice(length)
     }
 }
 
@@ -159,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Allocator can be restared only when there is no references to it's buffer")]
+    #[should_panic(expected = "Allocator can be restared only when there is no references to it's buffer and buffer is not borrowed")]
     fn it_works2() {
         let mut buf = vec![0u8; 5];
         let a = RestartableFBA::new(&mut buf);
@@ -223,10 +228,10 @@ mod tests {
         } 
 
 
-        let buf_ref = alloc.get_buf().unwrap();
+        let mut buf_ref = alloc.get_buf().unwrap();
         buf_ref[0] = 0xAA;
 
-        assert_eq!(buf_ref, &mut [0xAA, 0, 0, 0]);
+        assert_eq!(&*buf_ref, &[0xAA, 0, 0, 0]);
     }
 
     #[test]
@@ -236,5 +241,26 @@ mod tests {
 
         let _x = alloc.create(0x42u8).unwrap();
         assert!(alloc.get_buf().is_none());
+    }
+
+    #[test]
+    fn it_works4() {
+        let mut buf = [0u8; 4];
+        let alloc = Arc::new(RestartableFBA::new(&mut buf));
+
+        {
+            let _ = alloc.create(0xfcfdfeffu32).unwrap();
+            dbg!(&alloc);
+        }
+
+        let b = alloc.get_buf().unwrap();
+        assert!(alloc.create(0x04030201u32).is_err());
+        dbg!(&b, &alloc);
+
+        drop(b);
+        alloc.restart();
+        
+        let x = alloc.create(0x04030201u32).unwrap();
+        assert_eq!(*x, 0x04030201)
     }
 }

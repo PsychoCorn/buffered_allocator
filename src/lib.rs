@@ -169,13 +169,17 @@ impl<'buf> RestartableFBA<'buf> {
         }
     }
 
-    pub fn get_buf(&self) -> Option<&'buf mut [u8]> {
+    pub fn get_buf<'alloc: 'buf>(&'alloc self) -> Option<AllocatedRef<'buf, [u8]>> {
         if self.counter.get() != 0 {
             None
         } else {
-            unsafe {
-                Some(&mut (*self.alloc.as_ptr().cast::<FixBufferedAllocator<'buf>>()).buf)
-            }
+            let mut alloc = self.alloc.borrow_mut();
+            let length = alloc.buf.len();
+            alloc.offset = 0;
+
+            drop(alloc);
+
+            self.alloc_slice(length)
         }
     }
 }
@@ -267,12 +271,18 @@ mod tests {
         let mut b1 = [0u8; 1];
         let a = RestartableFBA::new(&mut b1);
         {
-            let _ = a.create(255u8).unwrap();
-        };
+            let _x = a.create(255u8).unwrap();
+        }
 
         let b = a.get_buf().unwrap();
         dbg!(&b);
-        assert_eq!(&b, &[255]);
+        assert_eq!(&*b, &[255]);
+
+        drop(b);
+        a.restart();
+
+        let x = a.create(127u8).unwrap();
+        assert_eq!(*x, 127);
     }
 
     #[test]
