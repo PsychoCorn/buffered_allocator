@@ -168,6 +168,16 @@ impl<'buf> RestartableFBA<'buf> {
             Some(())
         }
     }
+
+    pub fn get_buf(&self) -> Option<&'buf mut [u8]> {
+        if self.counter.get() != 0 {
+            None
+        } else {
+            unsafe {
+                Some(&mut (*self.alloc.as_ptr().cast::<FixBufferedAllocator<'buf>>()).buf)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -250,5 +260,33 @@ mod tests {
 
         let _v1 = a.create(5u8).unwrap();
         a.new_buffer(&mut b2); // This should panic
+    }
+
+    #[test]
+    fn get_buf_test() {
+        let mut b1 = [0u8; 1];
+        let a = RestartableFBA::new(&mut b1);
+        {
+            let _ = a.create(255u8).unwrap();
+        };
+
+        let b = a.get_buf().unwrap();
+        dbg!(&b);
+        assert_eq!(&b, &[255]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_buf_test_panic() {
+        let mut b1 = [0u8; 1];
+        let a = RestartableFBA::new(&mut b1);
+        {
+            let _ = a.create(255u8).unwrap();
+        };
+
+        dbg!(&a);
+        let _b = a.get_buf().unwrap();
+
+        let _ = a.create(1u8).unwrap();
     }
 }

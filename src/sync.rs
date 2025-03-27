@@ -94,6 +94,22 @@ impl<'buf> RestartableFBA<'buf> {
             Some(())
         }
     }
+
+    pub fn get_buf(&self) -> Option<&'buf mut [u8]> {
+        if self.counter.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+
+        let mut alloc = self.alloc.lock().unwrap();
+
+        unsafe {
+            let ptr = std::ptr::slice_from_raw_parts_mut(
+                alloc.buf.as_mut_ptr(), 
+                alloc.buf.len()
+            );
+            Some(&mut *ptr)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +211,30 @@ mod tests {
         while let None = a.try_restard() {}
         
         dbg!(&a);
+    }
+
+    #[test]
+    fn sync_get_buf_safe() {
+        let mut buf = [0u8; 4];
+        let alloc = Arc::new(RestartableFBA::new(&mut buf));
+
+        {
+            let _x = alloc.create(0x42u8).unwrap(); 
+        } 
+
+
+        let buf_ref = alloc.get_buf().unwrap();
+        buf_ref[0] = 0xAA;
+
+        assert_eq!(buf_ref, &mut [0xAA, 0, 0, 0]);
+    }
+
+    #[test]
+    fn sync_get_buf_with_active_refs() {
+        let mut buf = [0u8; 4];
+        let alloc = Arc::new(RestartableFBA::new(&mut buf));
+
+        let _x = alloc.create(0x42u8).unwrap();
+        assert!(alloc.get_buf().is_none());
     }
 }
